@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>WhatsApp Bulk Sender</title>
+    <!-- כולל את ספריית SheetJS דרך CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f2f2f2;
+            padding: 20px;
+            direction: rtl;
+        }
+        h1 {
+            text-align: center;
+            color: #25D366;
+        }
+        .container {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            max-width: 1000px;
+            margin: auto;
+        }
+        .step {
+            margin-bottom: 30px;
+        }
+        .step h2 {
+            color: #075E54;
+        }
+        input[type="file"] {
+            display: block;
+            margin-bottom: 10px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 10px;
+        }
+        table, th, td {
+            border: 1px solid #ddd;
+        }
+        th, td {
+            padding: 8px;
+            text-align: center;
+        }
+        th {
+            background-color: #25D366;
+            color: white;
+        }
+        .error {
+            color: red;
+        }
+        .success {
+            color: green;
+        }
+        textarea, select {
+            width: 100%;
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            resize: vertical;
+            margin-bottom: 10px;
+        }
+        button {
+            background-color: #25D366;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-top: 10px;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #128C7E;
+        }
+        .progress {
+            margin-top: 10px;
+        }
+        .report {
+            margin-top: 20px;
+        }
+        .media-section {
+            margin-top: 10px;
+        }
+        .media-preview img {
+            max-width: 100px;
+            max-height: 100px;
+            margin-top: 10px;
+        }
+        .remove-button {
+            background-color: red;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>WhatsApp Bulk Sender</h1>
+
+    <!-- שלב 1: ייבוא אנשי קשר -->
+    <div class="step" id="import-contacts">
+        <h2>שלב 1: ייבוא אנשי קשר</h2>
+        <input type="file" id="fileInput" accept=".csv, .xlsx">
+        <div id="importMessages"></div>
+        <table id="contactsTable">
+            <thead>
+                <tr>
+                    <!-- כותרות טבלה ישתנו דינמית בהתאם לעמודות בקובץ -->
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <!-- שלב 2: עריכת הודעה -->
+    <div class="step" id="edit-message">
+        <h2>שלב 2: עריכת הודעה</h2>
+        <textarea id="messageTemplate" placeholder="כתוב כאן את ההודעה שלך. השתמש בתגיות כמו {{firstName}}, {{address}} והוסף קישורים כמו https://example.com"></textarea>
+        <div class="media-section">
+            <label for="mediaFile">הוסף תמונה או קובץ (לא נתמך ישירות ב-URL של WhatsApp Web)</label>
+            <input type="file" id="mediaFile" accept="image/*,application/pdf">
+            <div class="media-preview" id="mediaPreview"></div>
+            <button onclick="removeMedia()" class="remove-button">הסר קובץ מצורף</button>
+        </div>
+        <button onclick="showPreview()">הצג תצוגה מקדימה</button>
+        <div id="messagePreview"></div>
+    </div>
+
+    <!-- שלב 3: שליחת הודעות -->
+    <div class="step" id="send-messages">
+        <h2>שלב 3: שליחת הודעות</h2>
+        <button onclick="startSendingMessages()">התחל שליחת הודעות</button>
+        <div class="progress" id="sendingProgress"></div>
+    </div>
+
+    <!-- שלב 4: הפקת דוח -->
+    <div class="step" id="report">
+        <h2>שלב 4: דוח שליחה</h2>
+        <button onclick="downloadReport()">הורד דוח</button>
+        <div class="report" id="reportContent"></div>
+    </div>
+</div>
+
+<script>
+    let contacts = [];
+    let report = [];
+    let mediaURL = '';
+
+    // מאזין לשינוי בקובץ ההעלאה
+    document.getElementById('fileInput').addEventListener('change', function(event) {
+        const file = event.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, {type: 'array'});
+                const firstSheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheetName];
+                const jsonData = XLSX.utils.sheet_to_json(worksheet, {header:1});
+                parseData(jsonData);
+            };
+            if (file.name.endsWith('.csv')) {
+                reader.readAsBinaryString(file);
+            } else {
+                reader.readAsArrayBuffer(file);
+            }
+        } else {
+            displayImportMessage("לא נבחר קובץ.", "error");
+        }
+    });
+
+    // פונקציה לניתוח הנתונים מהקובץ
+    function parseData(data) {
+        if (data.length === 0) {
+            displayImportMessage("הקובץ ריק.", "error");
+            return;
+        }
+
+        const headers = data[0];
+        const requiredHeaders = ['שם פרטי', 'טלפון'];
+        const missingHeaders = requiredHeaders.filter(header => !headers.includes(header));
+
+        if (missingHeaders.length > 0) {
+            displayImportMessage(`הקובץ חייב להכיל את העמודות: ${missingHeaders.join(', ')}.`, "error");
+            return;
+        }
+
+        // יצירת כותרות הטבלה
+        const thead = document.querySelector('#contactsTable thead tr');
+        thead.innerHTML = '';
+        headers.forEach(header => {
+            const th = document.createElement('th');
+            th.textContent = header;
+            thead.appendChild(th);
+        });
+
+        const firstNameIndex = headers.indexOf('שם פרטי');
+        const phoneIndex = headers.indexOf('טלפון');
+
+        const result = [];
+
+        for (let i = 1; i < data.length; i++) {
+            const row = data[i];
+            if (row.length < Math.max(firstNameIndex, phoneIndex) + 1) continue;
+
+            const contact = {};
+            headers.forEach((header, index) => {
+                contact[header] = row[index] ? row[index].toString().trim() : '';
+            });
+
+            // בדיקת תקינות מספר טלפון
+            const phoneClean = contact['טלפון'].replace(/[^0-9]/g, '');
+            if (phoneClean.length < 10 || phoneClean.length > 15) {
+                contact['valid'] = false;
+            } else {
+                contact['valid'] = true;
+                contact['טלפון'] = phoneClean;
+            }
+
+            result.push(contact);
+        }
+
+        contacts = result;
+        displayContacts();
+    }
+
+    // הצגת אנשי הקשר בטבלה
+    function displayContacts() {
+        const tbody = document.querySelector('#contactsTable tbody');
+        tbody.innerHTML = '';
+        contacts.forEach(contact => {
+            const tr = document.createElement('tr');
+            for (let key in contact) {
+                if (key !== 'valid') {
+                    const td = document.createElement('td');
+                    td.textContent = contact[key];
+                    tr.appendChild(td);
+                }
+            }
+            tbody.appendChild(tr);
+        });
+        displayImportMessage(`ייבוא הצליח! ייבוא ${contacts.length} אנשי קשר.`, "success");
+    }
+
+    // הצגת הודעות שגיאה והצלחה
+    function displayImportMessage(message, type) {
+        const importMessages = document.getElementById('importMessages');
+        importMessages.innerHTML = `<p class="${type}">${message}</p>`;
+    }
+
+    // הצגת תצוגה מקדימה של ההודעה
+    function showPreview() {
+        const template = document.getElementById('messageTemplate').value;
+        if (!template) {
+            alert("יש לכתוב הודעה לפני הצגת התצוגה מקדימה.");
+            return;
+        }
+
+        let preview = template;
+
+        // החלפת תגיות דינמיות עם דוגמה
+        contacts.slice(0,1).forEach(contact => {
+            for (let key in contact) {
+                if (key !== 'valid') {
+                    const regex = new RegExp(`{{${key}}}`, 'g');
+                    preview = preview.replace(regex, contact[key] || 'N/A');
+                }
+            }
+        });
+
+        // החלפת קישורים בתצוגה מקדימה
+        preview = preview.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>');
+
+        // הוספת קישור למדיה אם יש
+        if (mediaURL) {
+            if (mediaURL.startsWith('data:image')) {
+                preview += `<br><br><img src="${mediaURL}" alt="Media" />`;
+            } else {
+                preview += `<br><br><a href="${mediaURL}" target="_blank">קובץ מצורף</a>`;
+            }
+        }
+
+        document.getElementById('messagePreview').innerHTML = `<h3>תצוגה מקדימה:</h3><p>${preview}</p>`;
+    }
+
+    // טיפול בהעלאת מדיה
+    document.getElementById('mediaFile').addEventListener('change', function(event) {
+        const file = event.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                mediaURL = e.target.result;
+                displayMediaPreview();
+            };
+            reader.readAsDataURL(file);
+        }
+    });
+
+    // הצגת תצוגה מקדימה של המדיה
+    function displayMediaPreview() {
+        const mediaPreview = document.getElementById('mediaPreview');
+        if (mediaURL.startsWith('data:image')) {
+            mediaPreview.innerHTML = `<img src="${mediaURL}" alt="Preview Image">`;
+        } else {
+            mediaPreview.innerHTML = `<p>קובץ מצורף: ${mediaURL.substring(0, 30)}...</p>`;
+        }
+    }
+
+    // הסרת המדיה
+    function removeMedia() {
+        mediaURL = '';
+        document.getElementById('mediaFile').value = '';
+        document.getElementById('mediaPreview').innerHTML = '';
+        alert("המדיה הוסרה בהצלחה.");
+    }
+
+    // התחלת שליחת ההודעות
+    function startSendingMessages() {
+        if (contacts.length === 0) {
+            alert("אין אנשי קשר לייבוא.");
+            return;
+        }
+        const template = document.getElementById('messageTemplate').value;
+        if (!template) {
+            alert("יש לכתוב הודעה לפני שליחה.");
+            return;
+        }
+
+        document.getElementById('sendingProgress').innerHTML = "התחלת שליחת הודעות...";
+
+        let sentCount = 0;
+        const validContacts = contacts.filter(c => c.valid);
+        const totalValid = validContacts.length;
+
+        validContacts.forEach((contact, index) => {
+            // יצירת הודעה מותאמת אישית לכל איש קשר
+            let personalizedMessage = template;
+            for (let key in contact) {
+                if (key !== 'valid') {
+                    const regex = new RegExp(`{{${key}}}`, 'g');
+                    personalizedMessage = personalizedMessage.replace(regex, encodeURIComponent(contact[key] || 'N/A'));
+                }
+            }
+
+            // קידוד ההודעה ל-URL
+            const encodedMessage = encodeURIComponent(personalizedMessage);
+
+            // בניית ה-URL לשליחת ההודעה
+            let url = `https://web.whatsapp.com/send?phone=${contact['טלפון']}&text=${encodedMessage}`;
+
+            // הוספת מדיה אם יש
+            if (mediaURL) {
+                // כמו שנאמר קודם, אין תמיכה ישירה בהוספת מדיה דרך URL. נציג הודעה למשתמש לצרף את המדיה ידנית.
+                setTimeout(() => {
+                    alert(`הודעה ל${contact['שם פרטי']} (${contact['טלפון']}) כוללת מדיה. אנא צרף את המדיה ידנית לאחר פתיחת WhatsApp Web.`);
+                }, index * 3000);
+            }
+
+            // השהייה של 3 שניות בין כל הודעה כדי למנוע חסימת פופ-אפים
+            setTimeout(() => {
+                window.open(url, '_blank');
+                report.push({
+                    phone: contact['טלפון'],
+                    status: "נשלחה"
+                });
+                sentCount++;
+                updateProgress(sentCount, totalValid);
+                if (sentCount === totalValid) {
+                    document.getElementById('sendingProgress').innerHTML += "<br>סיימת לשלוח את כל ההודעות.";
+                }
+            }, index * 3000); // השהייה של 3 שניות בין כל הודעה
+        });
+
+        // טיפול באנשי קשר לא תקינים
+        contacts.filter(c => !c.valid).forEach(contact => {
+            report.push({
+                phone: contact['טלפון'],
+                status: "מספר לא תקין"
+            });
+        });
+    }
+
+    // עדכון התקדמות השליחה
+    function updateProgress(count, total) {
+        document.getElementById('sendingProgress').innerHTML = `שליחת הודעות: ${count}/${total}`;
+    }
+
+    // הורדת הדוח
+    function downloadReport() {
+        if (report.length === 0) {
+            alert("אין דוח להורדה.");
+            return;
+        }
+        let csvContent = "data:text/csv;charset=utf-8,טלפון,סטטוס\n";
+        report.forEach(item => {
+            csvContent += `${item.phone},${item.status}\n`;
+        });
+        const encodedUri = encodeURI(csvContent);
+        const link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", "report.csv");
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+</script>
+
+</body>
+</html>
